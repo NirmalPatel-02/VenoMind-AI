@@ -4,3 +4,6 @@ langchain_community
 langchain_groq
 streamlit
 langgraph_checkpoint_sqlite
+langchain-community 
+duckduckgo-search
+ddgs

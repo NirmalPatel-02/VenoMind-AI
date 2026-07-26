@@ -7,8 +7,11 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DB_PATH = os.getenv("DB_PATH", "venomind.db")
 
-primary_model = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.7)
-fallback_model_1 = ChatGroq(model="qwen-2.5-32b", temperature=0.7)
-fallback_model_2 = ChatGroq(model="mixtral-8x7b-32768", temperature=0.7)
+primary_model = ChatGroq(
+    model="llama-3.1-8b-instant", 
+    temperature=0.7,
+    max_retries=2
+)
 
-llm = primary_model.with_fallbacks([fallback_model_1, fallback_model_2])
+fallback_model = ChatGroq(model="llama-3.1-8b-instant", temperature=0.7)
+llm = primary_model.with_fallbacks([fallback_model])
