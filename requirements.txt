@@ -7,3 +7,4 @@ langgraph_checkpoint_sqlite
 langchain-community 
 duckduckgo-search
 ddgs
+langchain-google-genai
