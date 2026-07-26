@@ -4,26 +4,20 @@ import sys
 import uuid
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
-from backend.backend import chatbot , model
+from backend.backend import chatbot , model , retrive_all_threads, retrive_all_titles, save_conversation, update_title
 from langchain_core.messages import HumanMessage , SystemMessage
 
 
 ## functions
 
 def generate_thread_id():
-    id = uuid.uuid4()
-    return id
+    return str(uuid.uuid4())
 
 def reset_chat():
     thread_id = generate_thread_id()
-    st.session_state['thread_id'] = thread_id
-    add_thread(thread_id)
-    st.session_state["conv_name"][thread_id] = "New Conversation"
-    st.session_state['message_history'] = []
-
-def add_thread(thread_id):
-    if thread_id not in st.session_state['chat_threads']:
-        st.session_state['chat_threads'].append(thread_id)
+    save_conversation(thread_id)
+    st.session_state["thread_id"] = thread_id
+    st.session_state["message_history"] = []
 
 def load_messages(thread_id):
     state = chatbot.get_state(config={"configurable": {"thread_id": thread_id}})
@@ -48,23 +42,30 @@ def generate_title(first_message):
     return response.content.strip()
 
 
-
 if 'message_history' not in st.session_state: 
     st.session_state['message_history'] = []
 
-if 'chat_threads' not in st.session_state:
-    st.session_state['chat_threads'] = []
+if "thread_id" not in st.session_state:
+    threads = retrive_all_threads()
+    if len(threads) == 0:
+        thread_id = generate_thread_id()
+        save_conversation(thread_id)
 
-if 'thread_id' not in st.session_state:
-    st.session_state['thread_id'] = generate_thread_id()
+        st.session_state["thread_id"] = thread_id
 
-if 'conv_name' not in st.session_state:
-    st.session_state['conv_name'] = {}
+    else:
+        st.session_state["thread_id"] = threads[-1]
 
-add_thread(st.session_state['thread_id'])
+messages = load_messages(st.session_state["thread_id"])
 
-if st.session_state['thread_id'] not in st.session_state['conv_name']:
-    st.session_state['conv_name'][st.session_state['thread_id']] = "New Conversation"
+st.session_state["message_history"] = [
+    {
+        "role": "user" if isinstance(msg, HumanMessage) else "assistant",
+        "content": msg.content,
+    }
+    for msg in messages
+]
+
 
 ## sidebar code
 
@@ -76,20 +77,17 @@ if st.sidebar.button('New Chat'):
 
 st.sidebar.header('Conversation History')
 
-for thread_id in st.session_state['chat_threads']:
-    if st.sidebar.button(st.session_state["conv_name"][thread_id],key=str(thread_id)):
-        st.session_state['thread_id'] = thread_id
+titles = retrive_all_titles()
+
+for thread_id, title in titles.items():
+    if st.sidebar.button(title, key=thread_id):
+        st.session_state["thread_id"] = thread_id
         messages = load_messages(thread_id)
         temp_messages = []
         for message in messages:
-            if isinstance(message , HumanMessage):
-                role = 'user'
-            else:
-                role = 'assistant'
-            temp_messages.append({'role':role , 'content': message.content})  
-        st.session_state['message_history'] = temp_messages  
-
-
+            role = "user" if isinstance(message, HumanMessage) else "assistant"
+            temp_messages.append({"role": role,"content": message.content})
+        st.session_state["message_history"] = temp_messages
 
 for message in  st.session_state['message_history']:
     with st.chat_message(message['role']):
@@ -106,9 +104,11 @@ if user_input:
 
     thread_id = st.session_state["thread_id"]
 
-    if st.session_state["conv_name"][thread_id] == "New Conversation":
+    titles = retrive_all_titles()
+
+    if titles[thread_id] == "New Conversation":
         title = generate_title(user_input)
-        st.session_state["conv_name"][thread_id] = title
+        update_title(thread_id, title)
 
     CONFIG = {'configurable':{'thread_id':thread_id}}
 
