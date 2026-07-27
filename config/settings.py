@@ -15,12 +15,12 @@ gemini_agent = ChatGoogleGenerativeAI(
     temperature=0.7
 )
 
-groq_agent_70b = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=GROQ_API_KEY,
-    temperature=0.7,
-    max_retries=2
-)
+# groq_agent_70b = ChatGroq(
+#     model="llama-3.3-70b-versatile",
+#     api_key=GROQ_API_KEY,
+#     temperature=0.7,
+#     max_retries=2
+# )
 
 groq_agent_8b = ChatGroq(
     model="llama-3.1-8b-instant",
@@ -29,16 +29,10 @@ groq_agent_8b = ChatGroq(
     max_retries=2
 )
 
-primary_model = gemini_agent.with_fallbacks([groq_agent_70b, groq_agent_8b])
+primary_model = gemini_agent.with_fallbacks([groq_agent_8b])
 
 groq_title_primary = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=GROQ_API_KEY,
-    temperature=0.5
-)
-
-groq_title_qwen = ChatGroq(
-    model="qwen-2.5-32b",
+    model="openai/gpt-oss-120b",
     api_key=GROQ_API_KEY,
     temperature=0.5
 )
@@ -49,4 +43,4 @@ gemini_title_fallback = ChatGoogleGenerativeAI(
     temperature=0.5
 )
 
-llm = groq_title_primary.with_fallbacks([groq_title_qwen, gemini_title_fallback])
+llm = groq_title_primary.with_fallbacks([gemini_title_fallback])

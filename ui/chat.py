@@ -5,9 +5,9 @@ from database.db import update_title, retrieve_all_titles
 
 
 def load_clean_message_history(thread_id: str):
-    """Retrieves raw messages from the chatbot checkpointer state and filters
+    """Retrieves raw messages from checkpointer state and returns ONLY the final
 
-    out internal tool call triggers & intermediate tool outputs for a clean UI.
+    user prompt and final assistant response per turn.
     """
     config = {"configurable": {"thread_id": thread_id}}
     try:
@@ -17,11 +17,19 @@ def load_clean_message_history(thread_id: str):
         raw_messages = []
 
     clean_history = []
+    
     for msg in raw_messages:
-        if getattr(msg, "type", None) == "human":
-            clean_history.append({"role": "user", "content": msg.content})
-        elif getattr(msg, "type", None) == "ai" and msg.content:
-            clean_history.append({"role": "assistant", "content": msg.content})
+        msg_type = getattr(msg, "type", None)
+        content = getattr(msg, "content", "")
+
+        if msg_type == "human" and content:
+            clean_history.append({"role": "user", "content": content})
+
+        elif msg_type == "ai" and content and not getattr(msg, "tool_calls", None):
+            if clean_history and clean_history[-1]["role"] == "assistant":
+                clean_history[-1]["content"] = content
+            else:
+                clean_history.append({"role": "assistant", "content": content})
 
     return clean_history
 
@@ -59,53 +67,76 @@ def render_chat_interface():
         config = {"configurable": {"thread_id": thread_id}}
 
         with st.chat_message("assistant"):
-            status_container = st.empty()
-            search_status = None
+            with st.status("🧠 VenoMind AI is processing...", expanded=True) as status_box:
+                final_response_text = ""
 
-            response_stream = chatbot.stream(
-                {"messages": [HumanMessage(content=user_input)]},
-                config=config,
-                stream_mode="messages",
-            )
+                events = chatbot.stream(
+                    {
+                        "messages": [HumanMessage(content=user_input)],
+                        "query": user_input,
+                        "iteration": 0,
+                        "max_iteration": 2,
+                    },
+                    config=config,
+                    stream_mode="updates",
+                )
 
-            def stream_parser():
-                nonlocal search_status
+                for event in events:
+                    for node_name, node_update in event.items():
 
-                for message_chunk, metadata in response_stream:
-                    if metadata.get("langgraph_node") == "chat_node" and getattr(
-                        message_chunk, "tool_calls", None
-                    ):
-                        if search_status is None:
-                            search_status = status_container.status(
-                                "🌐 Searching the web for real-time information...",
-                                expanded=True,
-                            )
-                            search_status.write("🔍 Querying web sources...")
+                        if node_name == "chat_node":
+                            messages = node_update.get("messages", [])
+                            if messages:
+                                last_msg = messages[-1]
+                                if getattr(last_msg, "tool_calls", None):
+                                    status_box.update(
+                                        label="🌐 Searching live web sources via DuckDuckGo...",
+                                        state="running",
+                                    )
+                                else:
+                                    final_response_text = node_update.get("answer", last_msg.content)
 
-                    if metadata.get("langgraph_node") == "tools":
-                        if search_status is not None:
-                            if message_chunk.content:
-                                search_status.markdown("**Found Sources / Snippets:**")
-                                search_status.write(message_chunk.content)
-                            search_status.update(
-                                label="✅ Search completed. Generating response...",
+                        elif node_name == "tools":
+                            messages = node_update.get("messages", [])
+                            if messages:
+                                snippet = str(messages[-1].content)[:250]
+                                st.write("🔍 **Retrieved Search Context:**")
+                                st.caption(f"\"{snippet}...\"")
+                                status_box.update(
+                                    label="⚡ Synthesizing retrieved data...",
+                                    state="running",
+                                )
+
+                        elif node_name == "evaluate_answer":
+                            eval_status = node_update.get("evaluation")
+                            feedback = node_update.get("feedback")
+
+                            if eval_status == "approved":
+                                status_box.update(
+                                    label="✅ Quality check passed!",
+                                    state="complete",
+                                    expanded=False,
+                                )
+                            else:
+                                status_box.update(
+                                    label="🔍 QA Evaluator flagged draft. Optimizing response...",
+                                    state="running",
+                                    expanded=False,
+                                )
+                                st.warning(f"**Evaluator Critique:** {feedback}")
+
+                        elif node_name == "optimize_answer":
+                            final_response_text = node_update.get("answer", "")
+                            status_box.update(
+                                label="✨ Answer optimized and verified!",
                                 state="complete",
                                 expanded=False,
                             )
 
-                    if metadata.get("langgraph_node") == "chat_node" and message_chunk.content:
-                        if isinstance(message_chunk.content, str):
-                            yield message_chunk.content
-                        elif isinstance(message_chunk.content, list):
-                            for block in message_chunk.content:
-                                if isinstance(block, dict) and "text" in block:
-                                    yield block["text"]
-
-            ai_message = st.write_stream(stream_parser())
-
-        if ai_message:
-            st.session_state["message_history"].append(
-                {"role": "assistant", "content": ai_message}
-            )
+            if final_response_text:
+                st.markdown(final_response_text)
+                st.session_state["message_history"].append(
+                    {"role": "assistant", "content": final_response_text}
+                )
 
         st.rerun()
