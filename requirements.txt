@@ -8,3 +8,5 @@ langchain-community
 duckduckgo-search
 ddgs
 langchain-google-genai
+yfinance
+langchain-openai

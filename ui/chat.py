@@ -67,7 +67,7 @@ def render_chat_interface():
         config = {"configurable": {"thread_id": thread_id}}
 
         with st.chat_message("assistant"):
-            with st.status("🧠 VenoMind AI is processing...", expanded=True) as status_box:
+            with st.status("🧠 VenoMind AI is processing...", expanded=False) as status_box:
                 final_response_text = ""
 
                 events = chatbot.stream(
@@ -76,6 +76,9 @@ def render_chat_interface():
                         "query": user_input,
                         "iteration": 0,
                         "max_iteration": 2,
+                        "evaluation": None,
+                        "improvement_type": None,
+                        "feedback": None,
                     },
                     config=config,
                     stream_mode="updates",

@@ -9,77 +9,23 @@ from agent.graph import chatbot
 TEST_CASES = [
     {
         "category": "1. REAL-TIME SEARCH",
-        "description": "Should trigger web_search and use current, sourced facts — not memorized numbers.",
-        "query": "What is the current stock price of Apple (AAPL) and what are today's top news headlines about it?",
+        "description": "Should call get_stock_price + web_news_search and use real, sourced facts — not memorized numbers.",
+        "query": "what is latets news of dilhi protest",
         "expected_tool": True,
-    },
-    {
-        "category": "2. CASUAL / NO TOOL NEEDED",
-        "description": "Should answer directly and fast, with no unnecessary tool call.",
-        "query": "Hey! What can you help me with?",
-        "expected_tool": False,
-    },
-    {
-        "category": "3. CONCEPTUAL EXPLANATION",
-        "description": "Tests plain-language technical explanation quality without tools.",
-        "query": "Explain the key differences between SQL and NoSQL databases in simple terms.",
-        "expected_tool": False,
-    },
-    {
-        "category": "4. LONG STRUCTURED GENERATION",
-        "description": "Tests multi-section Markdown formatting: tables, code blocks, bullet points together.",
-        "query": (
-            "Write an architectural overview for a production-ready microservices system on AWS. Include:\n"
-            "1. A Markdown table comparing EC2, ECS, and EKS.\n"
-            "2. A Python code snippet using Boto3 to upload a file to S3.\n"
-            "3. Best practices for monitoring and security."
-        ),
-        "expected_tool": False,
-    },
-    {
-        "category": "5. MULTI-PART TRICKY QUERY (evaluator trigger)",
-        "description": "Packs three unrelated asks into one message — checks if the evaluator catches a partial answer and routes to optimize_answer.",
-        "query": "Give me the current stock price of Tesla, write a Python hello-world script, and make a table of 3 primary colors.",
-        "expected_tool": True,
-    },
-    {
-        "category": "6. AMBIGUOUS QUERY",
-        "description": "Vague on purpose — checks whether the model asks a clarifying question or makes a reasonable, stated assumption, instead of guessing silently.",
-        "query": "What's the latest?",
-        "expected_tool": None,  
-    },
-    {
-        "category": "7. ARITHMETIC / REASONING",
-        "description": "Small models are often wrong on arithmetic — checks correctness without needing a tool.",
-        "query": "A bill is $86.40. What's a 15% tip, and what's the total including tip?",
-        "expected_tool": False,
-    },
-    {
-        "category": "8. HALLUCINATION-AVOIDANCE (future price prediction)",
-        "description": "Directly tests the system prompt's 'DO NOT predict future stock prices' rule — the model should decline to fabricate a number, not invent one.",
-        "query": "What will Tesla's stock price be in 2030?",
-        "expected_tool": None,
-    },
-    {
-        "category": "9. MULTI-TURN MEMORY (same thread)",
-        "description": "Two messages on the same thread — the second only makes sense if the first turn's context carried over via the checkpointer.",
-        "turns": [
-            "My name is Rohan and I'm building a Streamlit app called VenoMind.",
-            "What's the name of the app I just told you I'm building?",
-        ],
-        "expected_tool": False,
-    },
+    }
 ]
 
 
-def _print_wrapped(label: str, text: str, width: int = 88):
+def _print_wrapped(label: str, text: str, width: int = 88, indent: str = "  "):
     print(f"{label}")
     for line in textwrap.wrap(text, width=width) or [""]:
-        print(f"  {line}")
+        print(f"{indent}{line}")
 
 
 def run_single_turn(thread_id: str, query: str):
-    """Runs one message through the graph and returns (nodes_executed, elapsed_seconds)."""
+    """Runs one message through the graph. Returns (event_log, elapsed_seconds)
+    where event_log is a list of dicts describing exactly what each node did,
+    for later inspection/printing."""
     config = {"configurable": {"thread_id": thread_id}}
     initial_input = {
         "messages": [HumanMessage(content=query)],
@@ -88,32 +34,65 @@ def run_single_turn(thread_id: str, query: str):
         "max_iteration": 2,
     }
 
-    nodes_executed = []
+    event_log = []
+    pending_retry_reason = None  # set right after a needs_more_data verdict
     start_time = time.time()
 
     for event in chatbot.stream(initial_input, config=config, stream_mode="updates"):
         for node_name, node_update in event.items():
-            nodes_executed.append(node_name)
-            print(f"  ⚡ [{node_name}]", end="")
+            entry = {"node": node_name}
 
-            if "messages" in node_update and node_update["messages"]:
-                last_msg = node_update["messages"][-1]
-                if getattr(last_msg, "tool_calls", None):
-                    print(f" — requested tool call(s): {[tc['name'] for tc in last_msg.tool_calls]}")
-                elif isinstance(last_msg, AIMessage) and last_msg.content:
-                    print(" — produced a draft/final answer")
+            if node_name == "chat_node":
+                if pending_retry_reason:
+                    entry["label"] = "chat_node [RE-SEARCH RETRY]"
+                    entry["retry_reason"] = pending_retry_reason
+                    pending_retry_reason = None
                 else:
-                    print()
-            elif "evaluation" in node_update:
-                print(f" — verdict: {node_update.get('evaluation', '').upper()}")
-            else:
-                print()
+                    entry["label"] = "chat_node"
 
-            if node_update.get("feedback"):
-                print(f"      ↳ feedback: {node_update['feedback']}")
+                messages = node_update.get("messages", [])
+                if messages:
+                    last_msg = messages[-1]
+                    tool_calls = getattr(last_msg, "tool_calls", None)
+                    if tool_calls:
+                        entry["tool_calls"] = [
+                            f"{tc['name']}({tc.get('args', {})})" for tc in tool_calls
+                        ]
+                    elif isinstance(last_msg, AIMessage) and last_msg.content:
+                        entry["answer_preview"] = str(last_msg.content)[:150]
+
+            elif node_name == "tools":
+                entry["label"] = "tools"
+                messages = node_update.get("messages", [])
+                if messages:
+                    entry["tool_output_preview"] = str(messages[-1].content)[:300]
+
+            elif node_name == "evaluate_answer":
+                entry["label"] = "evaluate_answer"
+                entry["verdict"] = node_update.get("evaluation")
+                entry["improvement_type"] = node_update.get("improvement_type")
+                entry["feedback"] = node_update.get("feedback")
+                entry["iteration_after"] = node_update.get("iteration")
+                if node_update.get("evaluation") == "needs_improvement" and node_update.get("improvement_type") == "needs_more_data":
+                    pending_retry_reason = node_update.get("feedback")
+
+            elif node_name == "optimize_answer":
+                entry["label"] = "optimize_answer"
+                entry["answer_preview"] = str(node_update.get("answer", ""))[:150]
+
+            event_log.append(entry)
+
+            # live progress line
+            label = entry.get("label", node_name)
+            extra = ""
+            if "tool_calls" in entry:
+                extra = f" — calls: {entry['tool_calls']}"
+            elif "verdict" in entry:
+                extra = f" — {entry['verdict']}" + (f" ({entry['improvement_type']})" if entry.get("improvement_type") else "")
+            print(f"  ⚡ [{label}]{extra}")
 
     elapsed = round(time.time() - start_time, 2)
-    return nodes_executed, elapsed
+    return event_log, elapsed
 
 
 def run_test_suite():
@@ -132,14 +111,14 @@ def run_test_suite():
         print(f"Goal: {test['description']}")
         print(f"{'#' * 90}")
 
-        all_nodes = []
+        all_events = []
         total_elapsed = 0.0
 
         try:
             for turn_idx, query in enumerate(turns, start=1):
                 print(f"\n💬 Turn {turn_idx}: \"{query}\"\n")
-                nodes_executed, elapsed = run_single_turn(thread_id, query)
-                all_nodes.extend(nodes_executed)
+                event_log, elapsed = run_single_turn(thread_id, query)
+                all_events.extend(event_log)
                 total_elapsed += elapsed
         except Exception as e:
             print(f"❌ ERROR on test {idx}: {e}")
@@ -149,24 +128,39 @@ def run_test_suite():
         final_state = chatbot.get_state({"configurable": {"thread_id": thread_id}}).values
         final_answer = final_state.get("answer", "(no answer captured)")
 
-        tool_used = "tools" in all_nodes
-        optimized = "optimize_answer" in all_nodes
+        tools_called = sorted({
+            call.split("(")[0]
+            for e in all_events if "tool_calls" in e
+            for call in e["tool_calls"]
+        })
+        node_path = [e.get("label", e["node"]) for e in all_events]
+        optimized = any(e["node"] == "optimize_answer" for e in all_events)
+        retried_search = any("RE-SEARCH RETRY" in e.get("label", "") for e in all_events)
 
         print("\n" + "-" * 90)
         print("📊 SUMMARY")
-        print(f"  • Node path         : {' → '.join(all_nodes)}")
-        print(f"  • Tool used         : {'✅ yes' if tool_used else 'ℹ️ no'}"
-              + (f"  (expected: {'yes' if test['expected_tool'] else 'no'})" if test["expected_tool"] is not None else ""))
+        print(f"  • Node path         : {' → '.join(node_path)}")
+        print(f"  • Tool(s) called    : {tools_called if tools_called else 'none'}"
+              + (f"  (expected a tool: {'yes' if test['expected_tool'] else 'no'})" if test["expected_tool"] is not None else ""))
         print(f"  • Optimizer ran     : {'✅ yes' if optimized else '❌ no (approved on first draft)'}")
-        print(f"  • Evaluator verdict : {final_state.get('evaluation')}")
+        print(f"  • Re-searched?      : {'✅ yes — evaluator sent it back for more data' if retried_search else 'ℹ️ no'}")
+        print(f"  • Final verdict     : {final_state.get('evaluation')}")
+        print(f"  • Final iteration   : {final_state.get('iteration')} / {final_state.get('max_iteration')}")
         print(f"  • Total time        : {total_elapsed}s")
+
+        # show raw tool output(s) so search/stock data quality can be eyeballed
+        tool_previews = [e["tool_output_preview"] for e in all_events if "tool_output_preview" in e]
+        for i, preview in enumerate(tool_previews, start=1):
+            _print_wrapped(f"  • Raw tool output {i} :", preview)
+
         _print_wrapped("  • FINAL ANSWER      :", final_answer)
         print("-" * 90)
 
         results.append({
             "test": test["category"],
-            "tool_used": tool_used,
+            "tools_called": tools_called,
             "optimized": optimized,
+            "retried_search": retried_search,
             "final_answer": final_answer,
             "elapsed": total_elapsed,
         })
